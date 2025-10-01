@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-room_lights_controller.py
+room_lights_controller.py (pigpio backend via gpiozero PiGPIOFactory)
 Room lights controller with:
  - single press: toggle corresponding light
  - double press (any button): turn ALL lights ON
@@ -8,6 +8,7 @@ Room lights controller with:
 """
 
 from gpiozero import LED, Button
+from gpiozero.pins.pigpio import PiGPIOFactory
 from signal import pause
 from threading import Timer
 import sys
@@ -19,13 +20,18 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import LED_PINS, BUTTON_PINS
 
 class RoomLightsController:
-    def __init__(self, double_click_time: float = 0.4, hold_time: float = 1.0):
+    def __init__(self, double_click_time: float = 0.4, hold_time: float = 1.0, pigpio_host: str = None):
         """
         double_click_time: max interval (s) between two presses to count as double-press
         hold_time: seconds to register a hold (when_held)
+        pigpio_host: if None -> local pigpiod; else pass host/IP for remote pigpiod
         """
         self.double_click_time = double_click_time
         self.hold_time = hold_time
+
+        # create a PiGPIOFactory that gpiozero devices will use
+        # If pigpio_host is None, it connects to localhost pigpiod
+        self.factory = PiGPIOFactory(host=pigpio_host) if pigpio_host else PiGPIOFactory()
 
         self.leds = {}
         self.buttons = {}
@@ -36,18 +42,19 @@ class RoomLightsController:
         self.setup_lights()
 
     def setup_lights(self):
-        """Initialize all LEDs and buttons"""
-        print("Initializing room lights...")
+        """Initialize all LEDs and buttons using PiGPIOFactory"""
+        print("Initializing room lights (using pigpio backend)...")
 
-        # Create LED objects
+        # Create LED objects using the pigpio pin factory
         for room, pin in LED_PINS.items():
-            self.leds[room] = LED(pin)
+            self.leds[room] = LED(pin, pin_factory=self.factory)
             self.led_states[room] = False
             print(f"  {room.capitalize():8} - LED on pin {pin}")
 
-        # Create button objects with pull-down resistors
+        # Create button objects with pull-down resistors using PiGPIOFactory
         for room, pin in BUTTON_PINS.items():
-            btn = Button(pin, pull_up=False, bounce_time=0.05)
+            # gpiozero Button: pull_up=False -> internal pull-down; but pigpio supports pull-up/down via factory
+            btn = Button(pin, pull_up=False, bounce_time=0.05, pin_factory=self.factory)
             btn.hold_time = self.hold_time
             # wire handlers (use default args to avoid late-binding)
             btn.when_pressed = lambda r=room: self._on_button_press(r)
@@ -166,6 +173,14 @@ class RoomLightsController:
                 btn.close()
             except Exception:
                 pass
+
+        # Attempt to close/cleanup the factory if available (no-op if not)
+        try:
+            if hasattr(self.factory, "close"):
+                self.factory.close()
+        except Exception:
+            pass
+
         print("GPIO cleanup completed")
 
 def main():
