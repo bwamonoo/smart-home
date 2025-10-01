@@ -1,0 +1,7 @@
+Flask==2.3.3
+Flask-SocketIO==5.3.6
+eventlet==0.33.3
+gpiozero==1.6.2
+RPi.GPIO==0.7.1
+paho-mqtt==1.6.1
+requests==2.31.0

@@ -1,0 +1,46 @@
+2025-09-30 16:06:54,598 INFO Starting chatbot...
+2025-09-30 16:06:54,598 INFO [SIM] MinimalLights initialized
+2025-09-30 16:06:54,598 INFO Using MinimalLights simulator
+2025-09-30 16:06:54,599 INFO LightChatbot initialized
+2025-09-30 16:07:06,546 INFO User: help
+2025-09-30 16:07:06,547 INFO Interaction: 'help' -> 'I can control these lights and answer questions. Examples:
+- Turn on the kitchen light
+- Switch off bedroom light
+- Toggle hall
+- Is the bathroom light on?
+- Turn all lights off
+- Which lights are on?
+- List rooms
+You don't need exact phrasing — try natural sentences.'
+2025-09-30 16:07:18,970 INFO User: turn on kitchen light
+2025-09-30 16:07:18,972 INFO [SIM] kitchen -> ON
+2025-09-30 16:07:18,973 INFO Bot: Okay — I turned on the kitchen light.
+2025-09-30 16:07:18,974 INFO Interaction: 'turn on kitchen light' -> 'Okay — I turned on the kitchen light.'
+2025-09-30 16:07:38,725 INFO User: turn on the kitchen light
+2025-09-30 16:07:38,726 INFO [SIM] kitchen -> ON
+2025-09-30 16:07:38,726 INFO Bot: Okay — I turned on the kitchen light.
+2025-09-30 16:07:38,728 INFO Interaction: 'turn on the kitchen light' -> 'Okay — I turned on the kitchen light.'
+2025-09-30 16:07:55,050 INFO User: turn on bathroom light
+2025-09-30 16:07:55,051 INFO [SIM] bathroom -> ON
+2025-09-30 16:07:55,053 INFO Bot: Okay — I turned on the bathroom light.
+2025-09-30 16:07:55,054 INFO Interaction: 'turn on bathroom light' -> 'Okay — I turned on the bathroom light.'
+2025-09-30 16:08:07,012 INFO User: turn all lights on
+2025-09-30 16:08:07,014 INFO [SIM] hall -> ON
+2025-09-30 16:08:07,015 INFO [SIM] bedroom -> ON
+2025-09-30 16:08:07,016 INFO [SIM] kitchen -> ON
+2025-09-30 16:08:07,021 INFO [SIM] bathroom -> ON
+2025-09-30 16:08:07,026 INFO Bot: All lights turned ON.
+2025-09-30 16:08:07,028 INFO Interaction: 'turn all lights on' -> 'All lights turned ON.'
+2025-09-30 16:08:13,883 INFO User: help
+2025-09-30 16:08:13,885 INFO Interaction: 'help' -> 'I can control these lights and answer questions. Examples:
+- Turn on the kitchen light
+- Switch off bedroom light
+- Toggle hall
+- Is the bathroom light on?
+- Turn all lights off
+- Which lights are on?
+- List rooms
+You don't need exact phrasing — try natural sentences.'
+2025-09-30 16:08:30,092 INFO User: which lights are on
+2025-09-30 16:08:30,093 INFO Bot: Which room would you like me to control? (e.g. bedroom, kitchen)
+2025-09-30 16:08:30,094 INFO Interaction: 'which lights are on' -> 'Which room would you like me to control? (e.g. bedroom, kitchen)'

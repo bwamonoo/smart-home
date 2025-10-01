@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Home Control Center</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-home"></i>
+                    <h1>Smart Home Control</h1>
+                </div>
+                <div class="status-indicator">
+                    <div class="connection-status" id="connection-status">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Connecting...</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Dashboard -->
+        <main class="main-content">
+            <!-- Room Controls Section -->
+            <section class="dashboard-section">
+                <div class="section-header">
+                    <h2><i class="fas fa-lightbulb"></i> Room Controls</h2>
+                    <div class="global-controls">
+                        <button class="btn-global btn-on" onclick="controlAllLights(true)">
+                            <i class="fas fa-power-off"></i> All On
+                        </button>
+                        <button class="btn-global btn-off" onclick="controlAllLights(false)">
+                            <i class="fas fa-power-off"></i> All Off
+                        </button>
+                    </div>
+                </div>
+
+                <div class="rooms-grid">
+                    <!-- Hall Card -->
+                    <div class="room-card" id="hall-card">
+                        <div class="room-header">
+                            <h3><i class="fas fa-door-open"></i> Hall</h3>
+                            <div class="room-badge">Main</div>
+                        </div>
+                        <div class="light-indicator" id="hall-indicator">
+                            <div class="light-visual">
+                                <div class="light-glow"></div>
+                                <div class="light-bulb">
+                                    <i class="fas fa-lightbulb"></i>
+                                </div>
+                            </div>
+                            <span class="status-text">OFF</span>
+                        </div>
+                        <div class="room-controls">
+                            <button class="btn-room btn-on" onclick="controlLight('hall', true)">
+                                <i class="fas fa-play"></i> On
+                            </button>
+                            <button class="btn-room btn-off" onclick="controlLight('hall', false)">
+                                <i class="fas fa-stop"></i> Off
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Bedroom Card -->
+                    <div class="room-card" id="bedroom-card">
+                        <div class="room-header">
+                            <h3><i class="fas fa-bed"></i> Bedroom</h3>
+                            <div class="room-badge automation">Auto</div>
+                        </div>
+                        <div class="light-indicator" id="bedroom-indicator">
+                            <div class="light-visual">
+                                <div class="light-glow"></div>
+                                <div class="light-bulb">
+                                    <i class="fas fa-lightbulb"></i>
+                                </div>
+                            </div>
+                            <span class="status-text">OFF</span>
+                        </div>
+                        <div class="room-controls">
+                            <button class="btn-room btn-on" onclick="controlLight('bedroom', true)">
+                                <i class="fas fa-play"></i> On
+                            </button>
+                            <button class="btn-room btn-off" onclick="controlLight('bedroom', false)">
+                                <i class="fas fa-stop"></i> Off
+                            </button>
+                        </div>
+                        <div class="automation-info">
+                            <i class="fas fa-robot"></i> Motion & Light Sensing
+                        </div>
+                    </div>
+
+                    <!-- Kitchen Card -->
+                    <div class="room-card" id="kitchen-card">
+                        <div class="room-header">
+                            <h3><i class="fas fa-utensils"></i> Kitchen</h3>
+                        </div>
+                        <div class="light-indicator" id="kitchen-indicator">
+                            <div class="light-visual">
+                                <div class="light-glow"></div>
+                                <div class="light-bulb">
+                                    <i class="fas fa-lightbulb"></i>
+                                </div>
+                            </div>
+                            <span class="status-text">OFF</span>
+                        </div>
+                        <div class="room-controls">
+                            <button class="btn-room btn-on" onclick="controlLight('kitchen', true)">
+                                <i class="fas fa-play"></i> On
+                            </button>
+                            <button class="btn-room btn-off" onclick="controlLight('kitchen', false)">
+                                <i class="fas fa-stop"></i> Off
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Bathroom Card -->
+                    <div class="room-card" id="bathroom-card">
+                        <div class="room-header">
+                            <h3><i class="fas fa-bath"></i> Bathroom</h3>
+                        </div>
+                        <div class="light-indicator" id="bathroom-indicator">
+                            <div class="light-visual">
+                                <div class="light-glow"></div>
+                                <div class="light-bulb">
+                                    <i class="fas fa-lightbulb"></i>
+                                </div>
+                            </div>
+                            <span class="status-text">OFF</span>
+                        </div>
+                        <div class="room-controls">
+                            <button class="btn-room btn-on" onclick="controlLight('bathroom', true)">
+                                <i class="fas fa-play"></i> On
+                            </button>
+                            <button class="btn-room btn-off" onclick="controlLight('bathroom', false)">
+                                <i class="fas fa-stop"></i> Off
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Chatbot Section -->
+            <section class="dashboard-section">
+                <div class="section-header">
+                    <h2><i class="fas fa-robot"></i> Voice Assistant</h2>
+                    <div class="chatbot-modes">
+                        <button class="btn-mode" onclick="quickCommand('good night')">
+                            <i class="fas fa-moon"></i> Good Night
+                        </button>
+                        <button class="btn-mode" onclick="quickCommand('welcome home')">
+                            <i class="fas fa-home"></i> Welcome Home
+                        </button>
+                    </div>
+                </div>
+
+                <div class="chatbot-container">
+                    <div class="chat-header">
+                        <div class="chat-title">
+                            <i class="fas fa-comments"></i>
+                            Smart Assistant
+                        </div>
+                        <div class="chat-actions">
+                            <button class="btn-clear" onclick="clearChat()">
+                                <i class="fas fa-trash"></i> Clear
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="message bot-message">
+                            <div class="message-avatar">
+                                <i class="fas fa-robot"></i>
+                            </div>
+                            <div class="message-content">
+                                <div class="message-text">
+                                    Hello! I'm your smart home assistant. 🤖<br>
+                                    I can control lights in all rooms, check status, and run special modes.<br>
+                                    Try saying <em>"turn on kitchen light"</em> or <em>"good night"</em>
+                                </div>
+                                <div class="message-time">Just now</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="chat-input-container">
+                        <div class="quick-commands">
+                            <button class="quick-btn" onclick="quickCommand('turn on all lights')">All On</button>
+                            <button class="quick-btn" onclick="quickCommand('turn off all lights')">All Off</button>
+                            <button class="quick-btn" onclick="quickCommand('which lights are on')">Status</button>
+                            <button class="quick-btn" onclick="quickCommand('help')">Help</button>
+                        </div>
+                        <div class="input-group">
+                            <input type="text" id="message-input" placeholder="Ask me to control your lights... (e.g., 'turn on bedroom light')" autocomplete="off">
+                            <button class="btn-send" onclick="sendMessage()">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="footer-content">
+                <div class="system-info">
+                    <span><i class="fas fa-microchip"></i> Raspberry Pi 4</span>
+                    <span><i class="fas fa-code"></i> Python + Flask</span>
+                    <span><i class="fas fa-network-wired"></i> IoT System</span>
+                </div>
+                <div class="footer-status">
+                    <span id="last-update">System Ready</span>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="notification" class="notification-toast"></div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
