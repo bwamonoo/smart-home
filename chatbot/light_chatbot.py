@@ -213,7 +213,7 @@ class LightChatbot:
         if room == 'all':
             return self.control_all_lights(('all', 'on'))
         elif room:
-            success = self.lights.set_light(room, True)
+            success = self.lights.set_light(room, True, source='chatbot')  # Add source
             if success:
                 return f"💡 {self._random_affirmation()} Turned on the {room} light!"
             else:
@@ -229,7 +229,7 @@ class LightChatbot:
         if room == 'all':
             return self.control_all_lights(('all', 'off'))
         elif room:
-            success = self.lights.set_light(room, False)
+            success = self.lights.set_light(room, False, source='chatbot')  # Add source
             if success:
                 return f"💡 {self._random_affirmation()} Turned off the {room} light!"
             else:
@@ -329,7 +329,7 @@ class LightChatbot:
         scope, state = groups
         state_bool = state == 'on'
         
-        success = self.lights.set_light('all', state_bool)
+        success = self.lights.set_light('all', state_bool, source='chatbot')  # Add source
         if success:
             action = "on" if state_bool else "off"
             return f"🏠 {self._random_affirmation()} Turned {action} all lights in the house!"

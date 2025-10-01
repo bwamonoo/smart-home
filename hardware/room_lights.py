@@ -20,14 +20,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import LED_PINS, BUTTON_PINS
 
 class RoomLightsController:
-    def __init__(self, double_click_time: float = 0.4, hold_time: float = 1.0, pigpio_host: str = None):
+    def __init__(self, double_click_time: float = 0.4, hold_time: float = 1.0, pigpio_host: str = None, socketio=None):
         """
         double_click_time: max interval (s) between two presses to count as double-press
         hold_time: seconds to register a hold (when_held)
         pigpio_host: if None -> local pigpiod; else pass host/IP for remote pigpiod
+        socketio: SocketIO instance for real-time updates to web clients
         """
         self.double_click_time = double_click_time
         self.hold_time = hold_time
+        self.socketio = socketio
 
         # create a PiGPIOFactory that gpiozero devices will use
         # If pigpio_host is None, it connects to localhost pigpiod
@@ -65,6 +67,19 @@ class RoomLightsController:
         print("Room lights controller ready!")
         print("Press buttons to toggle lights. Double-press any button to turn ALL ON.")
         print(f"Hold any button for {self.hold_time} seconds to turn ALL OFF.")
+
+    def emit_light_change(self, room: str, state: bool, source: str = "button"):
+        """Emit light change event to all connected web clients"""
+        if self.socketio:
+            try:
+                self.socketio.emit('light_changed', {
+                    'room': room, 
+                    'state': state,
+                    'source': source
+                })
+                print(f"📡 Emitted {room} light change to web clients: {state}")
+            except Exception as e:
+                print(f"❌ Error emitting light change: {e}")
 
     # ----- Button event handlers -----
     def _on_button_press(self, room: str):
@@ -118,7 +133,7 @@ class RoomLightsController:
         self._pending_single_timers.clear()
 
     # ----- Light control methods -----
-    def toggle_light(self, room: str):
+    def toggle_light(self, room: str, source: str = "button"):
         """Toggle a specific room's light"""
         current_state = self.led_states.get(room, False)
         new_state = not current_state
@@ -129,9 +144,12 @@ class RoomLightsController:
             self.leds[room].off()
 
         self.led_states[room] = new_state
-        print(f"{room.capitalize()} light turned {'ON' if new_state else 'OFF'}")
+        print(f"{room.capitalize()} light turned {'ON' if new_state else 'OFF'} (via {source})")
+        
+        # Emit the change to web clients
+        self.emit_light_change(room, new_state, source)
 
-    def set_light(self, room: str, state: bool):
+    def set_light(self, room: str, state: bool, source: str = "system"):
         """Set a specific room's light state"""
         if state:
             self.leds[room].on()
@@ -139,22 +157,26 @@ class RoomLightsController:
             self.leds[room].off()
 
         self.led_states[room] = state
+        print(f"{room.capitalize()} light turned {'ON' if state else 'OFF'} (via {source})")
+        
+        # Emit the change to web clients
+        self.emit_light_change(room, state, source)
         return state
 
     def get_light_state(self, room: str):
         """Get current light state"""
         return self.led_states.get(room, False)
 
-    def all_lights_off(self):
+    def all_lights_off(self, source: str = "button"):
         """Turn all lights off"""
         for room in self.leds:
-            self.set_light(room, False)
+            self.set_light(room, False, source)
         print("All lights turned OFF")
 
-    def all_lights_on(self):
+    def all_lights_on(self, source: str = "button"):
         """Turn all lights on"""
         for room in self.leds:
-            self.set_light(room, True)
+            self.set_light(room, True, source)
         print("All lights turned ON")
 
     # ----- Cleanup -----
@@ -184,6 +206,7 @@ class RoomLightsController:
         print("GPIO cleanup completed")
 
 def main():
+    # Standalone mode - no socketio
     controller = RoomLightsController(double_click_time=0.4, hold_time=1.0)
 
     try:

@@ -17,7 +17,7 @@ from config.settings import HOST, PORT, DEBUG, SECRET_KEY
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = SECRET_KEY
-socketio = SocketIO(app, async_mode='eventlet')
+socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins="*")
 
 # Global components
 lights_controller = None
@@ -30,9 +30,13 @@ def initialize_components():
     
     print("Initializing Smart Home System...")
     
-    # 1. Initialize room lights
-    lights_controller = RoomLightsController()
-    print("✓ Room lights controller ready")
+    # 1. Initialize room lights with PiGPIOFactory and SocketIO
+    lights_controller = RoomLightsController(
+        double_click_time=0.4, 
+        hold_time=1.0, 
+        socketio=socketio  # Pass socketio instance for real-time updates
+    )
+    print("✓ Room lights controller ready (pigpio backend)")
     
     # 2. Initialize bedroom automation
     bedroom_automation = BedroomAutomation(lights_controller)
@@ -57,14 +61,7 @@ def control_light(room, state):
         return jsonify({'error': 'Room not found'}), 404
     
     new_state = state.lower() == 'on'
-    lights_controller.set_light(room, new_state)
-    
-    # Notify all connected clients
-    socketio.emit('light_changed', {
-        'room': room, 
-        'state': new_state,
-        'source': 'web'
-    })
+    lights_controller.set_light(room, new_state, source='web')
     
     return jsonify({'room': room, 'state': new_state})
 
