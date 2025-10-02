@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Standalone bedroom automation controller
-Can run independently without web interface
+Bedroom Automation with Dual Ultrasonic Sensors
+Replaces laser with second ultrasonic sensor for doorway detection
 """
 
 import time
@@ -12,7 +12,7 @@ import os
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.config import BEDROOM_SENSORS, LIGHT_THRESHOLD, DISTANCE_THRESHOLD, EXIT_DELAY
+from config.settings import BEDROOM_SENSORS, LIGHT_THRESHOLD, US1_DISTANCE_THRESHOLD, US2_DISTANCE_THRESHOLD, EXIT_DELAY
 
 try:
     import RPi.GPIO as GPIO
@@ -41,74 +41,100 @@ class BedroomAutomation:
         if not self.simulation_mode:
             self.setup_sensors()
         
-        print("Bedroom automation initialized")
+        print("🤖 Bedroom Automation Initialized (Dual Ultrasonic System)")
         if self.simulation_mode:
             print("  Running in SIMULATION MODE")
         print(f"  Light threshold: {LIGHT_THRESHOLD}")
-        print(f"  Distance threshold: {DISTANCE_THRESHOLD}cm")
+        print(f"  Top Sensor (US1) threshold: {US1_DISTANCE_THRESHOLD}cm")
+        print(f"  Side Sensor (US2) threshold: {US2_DISTANCE_THRESHOLD}cm")
         print(f"  Exit delay: {EXIT_DELAY}s")
     
     def setup_sensors(self):
-        """Initialize sensor GPIO pins"""
+        """Initialize dual ultrasonic sensor GPIO pins"""
         GPIO.setmode(GPIO.BCM)
         
-        # Laser sensor (input with pull-up)
-        GPIO.setup(BEDROOM_SENSORS['laser_beam'], GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        # Ultrasonic Sensor 1 (Top - inside room detection)
+        GPIO.setup(BEDROOM_SENSORS['us1_trigger'], GPIO.OUT)
+        GPIO.setup(BEDROOM_SENSORS['us1_echo'], GPIO.IN)
         
-        # Ultrasonic sensor
-        GPIO.setup(BEDROOM_SENSORS['ultrasonic_trigger'], GPIO.OUT)
-        GPIO.setup(BEDROOM_SENSORS['ultrasonic_echo'], GPIO.IN)
+        # Ultrasonic Sensor 2 (Side - doorway crossing detection)
+        GPIO.setup(BEDROOM_SENSORS['us2_trigger'], GPIO.OUT)
+        GPIO.setup(BEDROOM_SENSORS['us2_echo'], GPIO.IN)
         
-        # Initialize trigger to low
-        GPIO.output(BEDROOM_SENSORS['ultrasonic_trigger'], False)
+        # Initialize triggers to low
+        GPIO.output(BEDROOM_SENSORS['us1_trigger'], False)
+        GPIO.output(BEDROOM_SENSORS['us2_trigger'], False)
         time.sleep(0.5)
+        print("✅ Dual ultrasonic sensors initialized")
     
-    def read_laser_sensor(self):
-        """Read laser beam status"""
+    def read_ultrasonic_distance(self, trigger_pin, echo_pin):
+        """Generic function to read distance from any ultrasonic sensor"""
         if self.simulation_mode:
-            # Simulate laser sensor - you would replace this with actual input
-            return False
-        return not GPIO.input(BEDROOM_SENSORS['laser_beam'])
-    
-    def read_ultrasonic_distance(self):
-        """Measure distance using ultrasonic sensor"""
-        if self.simulation_mode:
-            # Simulate distance reading
-            return 200  # cm (far away)
+            # Simulate realistic distance readings
+            if trigger_pin == BEDROOM_SENSORS['us1_trigger']:  # Top sensor
+                return 150 + (time.time() % 5) * 30  # Vary between 150-300cm
+            else:  # Side sensor
+                return 200 + (time.time() % 8) * 25  # Vary between 200-400cm
         
-        # Send trigger pulse
-        GPIO.output(BEDROOM_SENSORS['ultrasonic_trigger'], True)
-        time.sleep(0.00001)
-        GPIO.output(BEDROOM_SENSORS['ultrasonic_trigger'], False)
-        
-        # Wait for echo
-        start_time = time.time()
-        stop_time = time.time()
-        
-        timeout = time.time() + 0.1  # 100ms timeout
-        while GPIO.input(BEDROOM_SENSORS['ultrasonic_echo']) == 0:
+        try:
+            # Send trigger pulse
+            GPIO.output(trigger_pin, True)
+            time.sleep(0.00001)
+            GPIO.output(trigger_pin, False)
+            
+            # Wait for echo response
             start_time = time.time()
-            if time.time() > timeout:
-                return 500  # Timeout value
-        
-        timeout = time.time() + 0.1
-        while GPIO.input(BEDROOM_SENSORS['ultrasonic_echo']) == 1:
             stop_time = time.time()
-            if time.time() > timeout:
-                return 500
-        
-        # Calculate distance in cm
-        time_elapsed = stop_time - start_time
-        distance = (time_elapsed * 34300) / 2
-        
-        return distance
+            
+            # Wait for echo to go high (with timeout)
+            timeout = time.time() + 0.1
+            while GPIO.input(echo_pin) == 0:
+                start_time = time.time()
+                if time.time() > timeout:
+                    return 500  # Timeout
+            
+            # Wait for echo to go low (with timeout)
+            timeout = time.time() + 0.1
+            while GPIO.input(echo_pin) == 1:
+                stop_time = time.time()
+                if time.time() > timeout:
+                    return 500  # Timeout
+            
+            # Calculate distance in cm
+            time_elapsed = stop_time - start_time
+            distance = (time_elapsed * 34300) / 2
+            
+            return distance
+            
+        except Exception as e:
+            print(f"❌ Error reading ultrasonic sensor: {e}")
+            return 500
+    
+    def read_us1_sensor(self):
+        """Read top ultrasonic sensor (inside room detection)"""
+        distance = self.read_ultrasonic_distance(
+            BEDROOM_SENSORS['us1_trigger'], 
+            BEDROOM_SENSORS['us1_echo']
+        )
+        return distance < US1_DISTANCE_THRESHOLD
+    
+    def read_us2_sensor(self):
+        """Read side ultrasonic sensor (doorway crossing detection)"""
+        distance = self.read_ultrasonic_distance(
+            BEDROOM_SENSORS['us2_trigger'], 
+            BEDROOM_SENSORS['us2_echo']
+        )
+        return distance < US2_DISTANCE_THRESHOLD
     
     def read_light_level(self):
         """Read light level (simulated for now)"""
         if self.simulation_mode:
-            # Simulate light level - replace with actual ADC reading
-            return 0.1  # Dark
-        # For real implementation, you'd read from ADC here
+            # Simulate day/night cycle - more realistic
+            current_hour = (time.time() / 3600) % 24
+            if 7 <= current_hour <= 19:  # Daytime
+                return 0.7 + (time.time() % 10) * 0.03  # Vary between 0.7-1.0
+            else:  # Nighttime
+                return 0.1 + (time.time() % 5) * 0.02   # Vary between 0.1-0.2
         return 0.1
     
     def start(self):
@@ -120,93 +146,101 @@ class BedroomAutomation:
         self.thread = Thread(target=self._automation_loop)
         self.thread.daemon = True
         self.thread.start()
-        print("Bedroom automation started")
+        print("✅ Bedroom automation started")
     
     def stop(self):
         """Stop the automation system"""
         self.running = False
         if self.thread:
             self.thread.join(timeout=2.0)
-        print("Bedroom automation stopped")
+        print("🛑 Bedroom automation stopped")
     
     def _automation_loop(self):
         """Main automation logic loop"""
         while self.running:
-            self._check_occupancy()
-            time.sleep(0.1)  # 100ms loop interval
+            try:
+                self._check_occupancy()
+                time.sleep(0.1)  # 100ms loop interval
+            except Exception as e:
+                print(f"❌ Error in automation loop: {e}")
+                time.sleep(1)
     
     def _check_occupancy(self):
-        """Check sensors and determine room occupancy"""
-        laser_broken = self.read_laser_sensor()
-        distance = self.read_ultrasonic_distance()
-        object_detected = distance < DISTANCE_THRESHOLD
+        """Check sensors and determine room occupancy using dual ultrasonic system"""
+        us2_detected = self.read_us2_sensor()  # Side sensor (doorway)
+        us1_detected = self.read_us1_sensor()  # Top sensor (inside)
         
-        # Record sensor event
+        # Record sensor event with timestamp
         current_time = time.time()
         event = {
             'time': current_time,
-            'laser': laser_broken,
-            'ultrasonic': object_detected
+            'us2': us2_detected,  # Side sensor (replaces laser)
+            'us1': us1_detected   # Top sensor
         }
         
         self.last_sensor_events.append(event)
-        # Keep only recent events (1 second window)
+        # Keep only recent events (1.5 second window for smoother detection)
         self.last_sensor_events = [e for e in self.last_sensor_events 
-                                 if current_time - e['time'] < 1.0]
+                                 if current_time - e['time'] < 1.5]
         
-        # State machine
+        # State machine logic
         with self.lock:
             if self.state == RoomState.EMPTY:
-                self._handle_empty_state(laser_broken, object_detected)
+                self._handle_empty_state(us2_detected, us1_detected)
             elif self.state == RoomState.OCCUPIED:
-                self._handle_occupied_state(laser_broken, object_detected)
+                self._handle_occupied_state(us2_detected, us1_detected)
             elif self.state == RoomState.EXITING:
-                self._handle_exiting_state(laser_broken, object_detected)
+                self._handle_exiting_state(us2_detected, us1_detected)
     
-    def _handle_empty_state(self, laser_broken, object_detected):
+    def _handle_empty_state(self, us2_detected, us1_detected):
         """Handle logic when room is empty"""
         if self._detect_entrance_sequence():
             light_level = self.read_light_level()
             if light_level < LIGHT_THRESHOLD:
                 self._turn_on_bedroom_light()
             self.state = RoomState.OCCUPIED
+            print("🚶 Entrance detected - Room now OCCUPIED")
     
-    def _handle_occupied_state(self, laser_broken, object_detected):
+    def _handle_occupied_state(self, us2_detected, us1_detected):
         """Handle logic when room is occupied"""
         if self._detect_exit_sequence():
             self.state = RoomState.EXITING
             self._start_exit_timer()
+            print("🚶 Exit sequence detected - Starting exit delay")
     
-    def _handle_exiting_state(self, laser_broken, object_detected):
+    def _handle_exiting_state(self, us2_detected, us1_detected):
         """Handle exiting state with safety delay"""
-        # If movement detected during exit delay, cancel exit
-        if object_detected:
+        # If top sensor detects movement during exit delay, cancel exit
+        if us1_detected:
             self._cancel_exit_timer()
             self.state = RoomState.OCCUPIED
+            print("🔄 Movement detected during exit delay - Canceling exit")
     
     def _detect_entrance_sequence(self):
-        """Detect entrance: Laser → Ultrasonic"""
+        """Detect entrance: US2 (side) → US1 (top)"""
         events = self.last_sensor_events
         if len(events) < 2:
             return False
         
+        # Look for pattern: Side sensor → Top sensor within 1 second
         for i in range(len(events) - 1):
-            if (events[i]['laser'] and 
-                events[i+1]['ultrasonic'] and
-                events[i+1]['time'] - events[i]['time'] < 0.5):
+            if (events[i]['us2'] and      # Side sensor triggered first
+                events[i+1]['us1'] and    # Then top sensor
+                events[i+1]['time'] - events[i]['time'] < 1.0):  # Within 1 second
                 return True
         return False
     
     def _detect_exit_sequence(self):
-        """Detect exit: Ultrasonic → Laser"""
+        """Detect exit: US1 (top) → US2 (side)"""
         events = self.last_sensor_events
         if len(events) < 2:
             return False
         
+        # Look for pattern: Top sensor → Side sensor within 1 second
         for i in range(len(events) - 1):
-            if (events[i]['ultrasonic'] and 
-                events[i+1]['laser'] and
-                events[i+1]['time'] - events[i]['time'] < 0.5):
+            if (events[i]['us1'] and      # Top sensor triggered first
+                events[i+1]['us2'] and    # Then side sensor
+                events[i+1]['time'] - events[i]['time'] < 1.0):  # Within 1 second
                 return True
         return False
     
@@ -227,6 +261,7 @@ class BedroomAutomation:
             if self.state == RoomState.EXITING:
                 self._turn_off_bedroom_light()
                 self.state = RoomState.EMPTY
+                print("💡 Exit delay completed - Light turned off, room EMPTY")
     
     def _cancel_exit_timer(self):
         """Cancel the exit timer"""
@@ -235,13 +270,13 @@ class BedroomAutomation:
     def _turn_on_bedroom_light(self):
         """Turn on bedroom light"""
         if self.lights:
-            self.lights.set_light('bedroom', True)
+            self.lights.set_light('bedroom', True, source='automation')
         print("🤖 Automation: Bedroom light turned ON")
     
     def _turn_off_bedroom_light(self):
         """Turn off bedroom light"""
         if self.lights:
-            self.lights.set_light('bedroom', False)
+            self.lights.set_light('bedroom', False, source='automation')
         print("🤖 Automation: Bedroom light turned OFF")
     
     def set_lights_controller(self, lights_controller):
@@ -249,14 +284,14 @@ class BedroomAutomation:
         self.lights = lights_controller
 
 def main():
-    """Standalone bedroom automation"""
-    print("=== Bedroom Automation Standalone Mode ===")
+    """Standalone bedroom automation testing"""
+    print("=== 🤖 Bedroom Automation (Dual Ultrasonic) Standalone Mode ===")
     print("This will control the bedroom light automatically")
-    print("based on occupancy and light level.")
+    print("based on occupancy using two ultrasonic sensors.")
     
     # Create a minimal lights controller for standalone use
     class MinimalLights:
-        def set_light(self, room, state):
+        def set_light(self, room, state, source='system'):
             action = "ON" if state else "OFF"
             print(f"💡 Would turn {room} light {action} (standalone mode)")
     
@@ -266,6 +301,7 @@ def main():
     try:
         automation.start()
         print("\nAutomation running. Press Ctrl+C to stop.")
+        print("Simulating sensor activity...")
         
         # Keep the main thread alive
         while automation.running:

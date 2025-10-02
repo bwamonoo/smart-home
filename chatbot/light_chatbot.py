@@ -1,516 +1,673 @@
 #!/usr/bin/env python3
 """
-Enhanced Smart Home Chatbot for Light Control
-Natural language processing with advanced features
+LightChatbot (Rhasspy + Snips-friendly)
+
+Delegates NLU to Rhasspy when available; falls back to a lightweight local
+parser. Integrates with the project's RoomLightsController.
+
+Place this file at chatbot/light_chatbot.py (overwrite).
 """
 
-import re
-import sys
 import os
+import sys
 import json
+import difflib
+import traceback
+import re
 from datetime import datetime
-from enum import Enum
-from typing import Dict, List, Tuple, Optional
+from typing import Optional, Dict, Any, List
 
-# Add parent folder to sys.path so imports work
+# Add project root to path (so imports work when run as module)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
+    import requests
+except Exception:
+    requests = None
+
+# Try to import the hardware controller if available
+try:
     from hardware.room_lights import RoomLightsController
     HARDWARE_AVAILABLE = True
-except ImportError:
+except Exception:
     HARDWARE_AVAILABLE = False
-    print("⚠️  Hardware controller not available - running in simulation mode")
 
+# Try to read RHASSPY_URL from config.settings or environment
+RHASSPY_URL = None
+try:
+    from config import settings as project_settings
+    RHASSPY_URL = getattr(project_settings, 'RHASSPY_URL', None)
+except Exception:
+    project_settings = None
 
-class LightState(Enum):
-    ON = "on"
-    OFF = "off"
-    TOGGLE = "toggle"
+# Environment variable override
+RHASSPY_URL = os.environ.get('RHASSPY_URL', RHASSPY_URL)
+
+# Default Rhasspy endpoint path for text-to-intent
+RHASSPY_TEXT2INTENT_PATH = '/api/text-to-intent'
+
+# Default room synonyms (used for fuzzy mapping only)
+DEFAULT_ROOM_MAPPINGS = {
+    'hall': ['hall', 'living room', 'living', 'lounge', 'sitting room', 'main room'],
+    'bedroom': ['bedroom', 'bed room', 'master bedroom', 'sleeping room', 'room'],
+    'kitchen': ['kitchen', 'cook', 'cooking area', 'cooking'],
+    'bathroom': ['bathroom', 'bath room', 'restroom', 'toilet', 'washroom', 'wc'],
+}
 
 
 class LightChatbot:
-    def __init__(self, lights_controller=None):
-        self.lights = lights_controller or self._create_simulator()
-        self.conversation_history = []
-        
-        # Enhanced room mappings with synonyms
-        self.room_mappings = {
-            'hall': ['hall', 'living room', 'living', 'lounge', 'livingroom', 'sitting room'],
-            'bedroom': ['bedroom', 'bed room', 'master bedroom', 'sleeping room', 'room'],
-            'kitchen': ['kitchen', 'cooking area', 'cook room', 'cooking'],
-            'bathroom': ['bathroom', 'bath room', 'restroom', 'toilet', 'washroom', 'wc']
-        }
-        
-        # All rooms identifier
-        self.all_rooms = ['all', 'every', 'every room', 'entire house', 'whole house', 'everything']
-        
-        # Enhanced command patterns with better regex
-        self.patterns = [
-            # Turn on patterns
-            (r'(turn on|switch on|enable|light up|activate|start|open) (?:the )?(.+?) (?:light|lights|bulb|lamp|illumination)', self.turn_on_light),
-            (r'(make|set) (?:the )?(.+?) (?:light|lights) (on|active)', self.set_light_state),
-            (r'(illuminate|brighten) (?:the )?(.+)', self.turn_on_light),
-            
-            # Turn off patterns
-            (r'(turn off|switch off|disable|deactivate|stop|close|shut off) (?:the )?(.+?) (?:light|lights|bulb|lamp|illumination)', self.turn_off_light),
-            (r'(make|set) (?:the )?(.+?) (?:light|lights) (off|inactive)', self.set_light_state),
-            (r'(darken) (?:the )?(.+)', self.turn_off_light),
-            
-            # Toggle patterns
-            (r'(toggle|flip|change) (?:the )?(.+?) (?:light|lights|bulb|lamp)', self.toggle_light),
-            
-            # Status check patterns
-            (r'(status|state|condition) (?:of|for) (?:the )?(.+) (?:light|lights|bulb|lamp)', self.check_light_status),
-            (r'(is|are) (?:the )?(.+) (?:light|lights|bulb|lamp) (on|off|working|functioning)', self.check_light_state),
-            (r'(which|what) (?:lights|lighting) (?:is|are) (on|off|active|inactive)', self.get_all_lights_status),
-            (r'(how many|how much) (?:lights|lighting) (?:is|are) (on|off)', self.get_light_count),
-            
-            # All lights control
-            (r'(all|every|entire|whole) (?:light|lights|bulb|lamps|illumination) (on|off)', self.control_all_lights),
-            (r'(turn|switch) (on|off) (?:all|every|entire|whole) (?:light|lights|bulb|lamps)', self.control_all_lights_direct),
-            (r'(lights?|lighting|illumination) (on|off|all)', self.control_all_lights_short),
-            
-            # Special commands
-            (r'(good night|goodnight|sleep time|bed time)', self.good_night_mode),
-            (r'(welcome home|i\'m home|i am home|arrived home)', self.welcome_home_mode),
-            (r'(movie time|cinema mode|watch movie|film mode)', self.movie_mode),
-            (r'(party mode|celebration|festive lights)', self.party_mode),
-            
-            # Help and system commands
-            (r'(help|commands|what can you do|options|menu)', self.show_help),
-            (r'(list rooms|available rooms|which rooms|rooms list)', self.list_rooms),
-            (r'(thank you|thanks|ty|appreciate it)', self.thank_you),
-            (r'(hello|hi|hey|greetings|good morning|good afternoon|good evening)', self.greeting),
-            (r'(bye|goodbye|exit|quit|see you|farewell)', self.goodbye),
-        ]
+    """Light chatbot that delegates NLU to Rhasspy (Snips) when available."""
 
-        self.setup_complete = False
-        self.initialize_chatbot()
-    
+    def __init__(self, lights_controller: Optional[Any] = None, rhasspy_url: Optional[str] = None):
+        # Use provided lights controller, or create simple simulator
+        self.lights = lights_controller or self._create_simulator()
+
+        # Conversation history (keeps last 200 entries)
+        self.conversation_history: List[Dict[str, Any]] = []
+
+        # Room mapping (canonical -> synonyms). If lights controller exposes
+        # available rooms, use that to narrow candidates.
+        self.room_mappings = DEFAULT_ROOM_MAPPINGS.copy()
+        self._refresh_rooms_from_controller()
+
+        # Rhasspy URL resolution
+        self.rhasspy_url = rhasspy_url or RHASSPY_URL
+        if self.rhasspy_url and self.rhasspy_url.endswith('/'):
+            self.rhasspy_url = self.rhasspy_url[:-1]
+
+        # Decide whether we have requests available
+        self._have_requests = requests is not None
+
+        # Initialization message
+        mode = "Hardware" if HARDWARE_AVAILABLE else "Simulation"
+        nlu_mode = f"Rhasspy @ {self.rhasspy_url}" if self.rhasspy_url else "Local fallback (no NLU)"
+        print(f"🤖 LightChatbot initialized ({mode} mode). NLU: {nlu_mode}")
+
+    def _refresh_rooms_from_controller(self):
+        """If controller exposes leds or states, derive canonical room names."""
+        try:
+            if hasattr(self.lights, 'leds') and isinstance(self.lights.leds, dict):
+                controller_rooms = list(self.lights.leds.keys())
+            elif hasattr(self.lights, 'states') and isinstance(self.lights.states, dict):
+                controller_rooms = list(self.lights.states.keys())
+            elif hasattr(self.lights, 'get_all_states'):
+                controller_rooms = list(self.lights.get_all_states().keys())
+            else:
+                controller_rooms = []
+
+            for room in controller_rooms:
+                room = room.lower()
+                if room not in self.room_mappings:
+                    self.room_mappings[room] = [room]
+        except Exception:
+            pass
+
     def _create_simulator(self):
-        """Create a simulator if hardware is not available"""
         class LightSimulator:
             def __init__(self):
-                self.states = {
-                    'hall': False,
-                    'bedroom': False, 
-                    'kitchen': False,
-                    'bathroom': False
-                }
-            
-            def set_light(self, room, state):
+                self.states = {r: False for r in ['hall', 'bedroom', 'kitchen', 'bathroom']}
+
+            def set_light(self, room, state, source='system'):
                 if room == 'all':
-                    for r in self.states:
-                        self.states[r] = state
-                elif room in self.states:
+                    for k in self.states:
+                        self.states[k] = state
+                    return True
+                if room in self.states:
                     self.states[room] = state
-                return True
-            
-            def get_light_state(self, room):
-                return self.states.get(room, False)
-            
-            def toggle_light(self, room):
+                    return True
+                return False
+
+            def toggle_light(self, room, source='system'):
                 if room in self.states:
                     self.states[room] = not self.states[room]
                     return self.states[room]
                 return False
-            
+
+            def get_light_state(self, room):
+                return self.states.get(room, False)
+
             def get_all_states(self):
                 return self.states.copy()
-            
+
             def cleanup(self):
                 pass
-        
+
         return LightSimulator()
 
-    def initialize_chatbot(self):
-        """Initialize the chatbot with welcome message"""
-        self.setup_complete = True
-        mode = "Hardware" if HARDWARE_AVAILABLE else "Simulation"
-        print(f"🏠 Smart Home Chatbot Initialized ({mode} Mode)")
-        print("Type 'help' for available commands or 'quit' to exit\n")
-
+    # ---------------- Public API ----------------
     def process_message(self, message: str) -> str:
-        """Process user message and return response"""
+        """Main entrypoint: takes plain text and returns a user-facing response."""
         if not message or not message.strip():
-            return "Please type a command. Type 'help' to see what I can do."
-        
-        message = message.lower().strip()
-        
-        # Add to conversation history
-        self.conversation_history.append({
-            'timestamp': datetime.now().isoformat(),
-            'user': message,
-            'response': None
-        })
-        
-        # Keep only last 50 messages
-        self.conversation_history = self.conversation_history[-50:]
-        
-        # Try pattern matching first
-        response = self._pattern_match(message)
-        if response:
-            # Store the response in history
-            if self.conversation_history:
-                self.conversation_history[-1]['response'] = response
+            return "Please type a command, for example: 'turn on kitchen light'."
+
+        user_text = message.strip()
+        self._append_history(user_text, None)
+
+        # ------------------ HOTFIX: handle "all" commands locally ------------------
+        # Prevent 'all' -> 'hall' confusion by short-circuiting 'all' requests.
+        lower = user_text.lower()
+        if re.search(r'\b(all|every|entire|whole|everything)\b', lower):
+            exc_room = None
+            m = re.search(r'except (the )?([a-zA-Z ]+)', lower)
+            if m:
+                exc_room_text = m.group(2).strip()
+                exc_room = self._map_room(exc_room_text)
+
+            # detect state word (on/off/toggle) from text (typo tolerant)
+            state = self._extract_state_from_text(lower)
+            if not state:
+                # If Rhasspy is configured, let it resolve ambiguous all-commands.
+                if not (self.rhasspy_url and self._have_requests):
+                    return "Please tell me 'on' or 'off' for controlling all lights."
+            else:
+                state_bool = state == 'on'
+                if exc_room:
+                    success = True
+                    # set all except the exception
+                    for r in self._get_room_keys():
+                        if r == exc_room:
+                            continue
+                        ok = self._set_room_state(r, state_bool)
+                        success = success and bool(ok)
+                    resp = f"Turned {'on' if state_bool else 'off'} all lights except the {exc_room}." if success else "Failed to control some lights."
+                    self._update_last_history_response(resp)
+                    return resp
+                else:
+                    ok = self._set_all_lights(state_bool)
+                    resp = self._format_all_response(ok, state_bool)
+                    self._update_last_history_response(resp)
+                    return resp
+        # ---------------- end HOTFIX ------------------------------------------------
+
+        # Try NLU if configured
+        if self.rhasspy_url and self._have_requests:
+            try:
+                intent_json = self._text_to_intent_rhasspy(user_text)
+                if intent_json:
+                    response = self._handle_intent_json(intent_json)
+                    self._update_last_history_response(response)
+                    return response
+            except Exception:
+                traceback.print_exc()
+
+        # Fallback local parsing
+        try:
+            response = self._local_fallback_parse(user_text)
+            self._update_last_history_response(response)
             return response
-        
-        # Fallback to fuzzy matching and context understanding
-        response = self._contextual_fallback(message)
-        
-        # Store the response in history
-        if self.conversation_history:
-            self.conversation_history[-1]['response'] = response
-            
-        return response
+        except Exception:
+            traceback.print_exc()
+            response = "Sorry — I couldn't understand that. Try: 'turn on kitchen light'"
+            self._update_last_history_response(response)
+            return response
 
-    def _pattern_match(self, message: str) -> Optional[str]:
-        """Match message against command patterns"""
-        for pattern, handler in self.patterns:
-            match = re.search(pattern, message, re.IGNORECASE)
-            if match:
-                return handler(match.groups())
-        return None
-
-    def _contextual_fallback(self, message: str) -> str:
-        """Handle messages that don't match patterns using contextual understanding"""
-        words = message.lower().split()
-        
-        # Check for light-related words
-        light_words = ['light', 'lights', 'bulb', 'lamp', 'bright', 'dark']
-        room_words = list(self.room_mappings.keys()) + [word for sublist in self.room_mappings.values() for word in sublist]
-        
-        has_light_word = any(word in light_words for word in words)
-        has_room_word = any(word in room_words for word in words)
-        
-        if has_light_word and has_room_word:
-            # Try to extract room and action
-            for room in self.room_mappings:
-                if any(word in self.room_mappings[room] for word in words):
-                    if any(word in ['on', 'enable', 'activate'] for word in words):
-                        return self.turn_on_light(('turn on', room, 'light'))
-                    elif any(word in ['off', 'disable', 'deactivate'] for word in words):
-                        return self.turn_off_light(('turn off', room, 'light'))
-                    else:
-                        return self.check_light_status(('status', room, 'light'))
-        
-        # Greeting detection
-        if any(word in ['hello', 'hi', 'hey'] for word in words):
-            return self.greeting(())
-        
-        # Help detection
-        if any(word in ['help', 'what', 'how'] for word in words):
-            return self.show_help(())
-        
-        return "I'm not quite sure what you want to do with the lights. Try something like 'turn on kitchen light' or 'are the bedroom lights on?'"
-
-    def turn_on_light(self, groups: Tuple) -> str:
-        """Turn on a specific light"""
-        action, room_text, _ = groups
-        room = self._identify_room(room_text)
-        
-        if room == 'all':
-            return self.control_all_lights(('all', 'on'))
-        elif room:
-            success = self.lights.set_light(room, True, source='chatbot')  # Add source
-            if success:
-                return f"💡 {self._random_affirmation()} Turned on the {room} light!"
-            else:
-                return f"❌ Sorry, I couldn't turn on the {room} light. There might be a hardware issue."
-        else:
-            return f"❌ I don't recognize the room '{room_text}'. Available rooms: {', '.join(self.room_mappings.keys())}"
-
-    def turn_off_light(self, groups: Tuple) -> str:
-        """Turn off a specific light"""
-        action, room_text, _ = groups
-        room = self._identify_room(room_text)
-        
-        if room == 'all':
-            return self.control_all_lights(('all', 'off'))
-        elif room:
-            success = self.lights.set_light(room, False, source='chatbot')  # Add source
-            if success:
-                return f"💡 {self._random_affirmation()} Turned off the {room} light!"
-            else:
-                return f"❌ Sorry, I couldn't turn off the {room} light. There might be a hardware issue."
-        else:
-            return f"❌ I don't recognize the room '{room_text}'. Available rooms: {', '.join(self.room_mappings.keys())}"
-
-    def set_light_state(self, groups: Tuple) -> str:
-        """Set light to specific state"""
-        action, room_text, state = groups
-        room = self._identify_room(room_text)
-        
-        if room:
-            state_bool = state == 'on'
-            success = self.lights.set_light(room, state_bool)
-            if success:
-                return f"💡 Set the {room} light {state}!"
-            else:
-                return f"❌ Sorry, I couldn't set the {room} light {state}."
-        else:
-            return f"❌ Room '{room_text}' not recognized."
-
-    def toggle_light(self, groups: Tuple) -> str:
-        """Toggle light state"""
-        action, room_text = groups
-        room = self._identify_room(room_text)
-        
-        if room:
-            new_state = self.lights.toggle_light(room)
-            state_text = "on" if new_state else "off"
-            return f"💡 Toggled the {room} light {state_text}!"
-        else:
-            return f"❌ Room '{room_text}' not recognized."
-
-    def check_light_status(self, groups: Tuple) -> str:
-        """Check status of a specific light"""
-        action, room_text, _ = groups
-        room = self._identify_room(room_text)
-        
-        if room:
-            state = self.lights.get_light_state(room)
-            status = "on" if state else "off"
-            return f"🔍 The {room} light is currently {status}."
-        else:
-            return f"❌ Room '{room_text}' not recognized."
-
-    def check_light_state(self, groups: Tuple) -> str:
-        """Check if light is on/off"""
-        is_word, room_text, state = groups
-        room = self._identify_room(room_text)
-        
-        if room:
-            actual_state = self.lights.get_light_state(room)
-            expected_state = state in ['on', 'working', 'functioning']
-            
-            if actual_state == expected_state:
-                return f"✅ Yes, the {room} light is {state}."
-            else:
-                return f"❌ No, the {room} light is {'on' if actual_state else 'off'}."
-        else:
-            return f"❌ Room '{room_text}' not recognized."
-
-    def get_all_lights_status(self, groups: Tuple) -> str:
-        """Get status of all lights"""
-        which, state = groups
-        state_bool = state in ['on', 'active']
-        
-        all_states = self.lights.get_all_states() if hasattr(self.lights, 'get_all_states') else {}
-        if not all_states:
-            # Fallback: check each room individually
-            all_states = {room: self.lights.get_light_state(room) for room in self.room_mappings.keys()}
-        
-        matching_rooms = [room for room, is_on in all_states.items() if is_on == state_bool]
-        
-        if matching_rooms:
-            room_list = ', '.join(matching_rooms)
-            return f"🔍 The following lights are {state}: {room_list}"
-        else:
-            return f"🔍 No lights are currently {state}."
-
-    def get_light_count(self, groups: Tuple) -> str:
-        """Count how many lights are on/off"""
-        how_many, state = groups
-        state_bool = state == 'on'
-        
-        all_states = self.lights.get_all_states() if hasattr(self.lights, 'get_all_states') else {}
-        if not all_states:
-            all_states = {room: self.lights.get_light_state(room) for room in self.room_mappings.keys()}
-        
-        count = sum(1 for is_on in all_states.values() if is_on == state_bool)
-        total = len(all_states)
-        
-        return f"📊 {count} out of {total} lights are {state}."
-
-    def control_all_lights(self, groups: Tuple) -> str:
-        """Control all lights at once"""
-        scope, state = groups
-        state_bool = state == 'on'
-        
-        success = self.lights.set_light('all', state_bool, source='chatbot')  # Add source
-        if success:
-            action = "on" if state_bool else "off"
-            return f"🏠 {self._random_affirmation()} Turned {action} all lights in the house!"
-        else:
-            return "❌ Sorry, I couldn't control all lights. There might be a hardware issue."
-
-    def control_all_lights_direct(self, groups: Tuple) -> str:
-        """Control all lights with direct command"""
-        action, state, scope = groups
-        state_bool = state == 'on'
-        
-        success = self.lights.set_light('all', state_bool)
-        if success:
-            action_text = "on" if state_bool else "off"
-            return f"🏠 Turned {action_text} all lights!"
-        else:
-            return "❌ Sorry, I couldn't control all lights."
-
-    def control_all_lights_short(self, groups: Tuple) -> str:
-        """Short command for all lights"""
-        lights, state = groups
-        state_bool = state == 'on'
-        
-        success = self.lights.set_light('all', state_bool)
-        if success:
-            action_text = "on" if state_bool else "off"
-            return f"🏠 Lights {action_text}!"
-        else:
-            return "❌ Couldn't control lights."
-
-    def good_night_mode(self, groups: Tuple) -> str:
-        """Turn off all lights for bedtime"""
-        success = self.lights.set_light('all', False)
-        if success:
-            return "🌙 Good night! All lights are turned off. Sleep well! 💤"
-        else:
-            return "❌ Couldn't set good night mode."
-
-    def welcome_home_mode(self, groups: Tuple) -> str:
-        """Turn on hall and kitchen lights when arriving home"""
-        self.lights.set_light('hall', True)
-        self.lights.set_light('kitchen', True)
-        return "👋 Welcome home! I've turned on the hall and kitchen lights for you. 🏠"
-
-    def movie_mode(self, groups: Tuple) -> str:
-        """Dim lights for movie watching"""
-        self.lights.set_light('hall', True)  # Keep hall light on for safety
-        self.lights.set_light('bedroom', False)
-        self.lights.set_light('kitchen', False)
-        self.lights.set_light('bathroom', False)
-        return "🎬 Movie mode activated! Dimmed the lights for optimal viewing. Enjoy your film! 🍿"
-
-    def party_mode(self, groups: Tuple) -> str:
-        """Special lighting for parties"""
-        # This would be enhanced with RGB lights in a real implementation
-        self.lights.set_light('all', True)
-        return "🎉 Party mode activated! All lights are on. Let's celebrate! 🥳"
-
-    def show_help(self, groups: Tuple) -> str:
-        """Show help message"""
-        return """
-🤖 **Smart Home Light Control Commands:**
-
-**Basic Control:**
-• "turn on [room] light" / "turn off [room] light"
-• "switch on kitchen light" / "switch off hall light"
-• "toggle bedroom light"
-• "set bathroom light on/off"
-
-**All Lights:**
-• "all lights on/off"
-• "turn on all lights" 
-• "lights on/off"
-• "everything on/off"
-
-**Status & Info:**
-• "is bedroom light on?"
-• "status of kitchen light"
-• "which lights are on?"
-• "how many lights are off?"
-• "list rooms"
-
-**Special Modes:**
-• "good night" - Turns off all lights
-• "welcome home" - Turns on entry lights
-• "movie time" - Dims lights for movies
-• "party mode" - All lights on
-
-**Available Rooms:** hall, bedroom, kitchen, bathroom
-
-💡 **Tip:** I understand natural language - try speaking normally!
-"""
-
-    def list_rooms(self, groups: Tuple) -> str:
-        """List available rooms"""
-        rooms = ", ".join(self.room_mappings.keys())
-        return f"🏠 Available rooms: {rooms}"
-
-    def thank_you(self, groups: Tuple) -> str:
-        """Respond to thanks"""
-        return "😊 You're welcome! Happy to help with your smart home."
-
-    def greeting(self, groups: Tuple) -> str:
-        """Respond to greetings"""
-        return "👋 Hello! I'm your smart home assistant. I can control your lights and more. How can I help you today?"
-
-    def goodbye(self, groups: Tuple) -> str:
-        """Respond to goodbye"""
-        return "👋 Goodbye! Have a great day! 😊"
-
-    def _identify_room(self, room_text: str) -> Optional[str]:
-        """Identify room from text with fuzzy matching"""
-        room_text = room_text.strip().lower()
-        
-        # Check for "all" first
-        if any(word in room_text for word in self.all_rooms):
-            return 'all'
-        
-        # Check exact matches and synonyms
-        for room, keywords in self.room_mappings.items():
-            if room_text == room or any(keyword == room_text for keyword in keywords):
-                return room
-            # Check if any keyword is contained in the room_text
-            if any(keyword in room_text for keyword in keywords):
-                return room
-        
-        return None
-
-    def _random_affirmation(self) -> str:
-        """Return random affirmation to make responses more natural"""
-        affirmations = [
-            "Done!", "Okay!", "Sure!", "Got it!", "No problem!", 
-            "Absolutely!", "Certainly!", "You got it!", "Alright!"
-        ]
-        import random
-        return random.choice(affirmations)
-
-    def get_conversation_history(self) -> List[Dict]:
-        """Get conversation history"""
-        return self.conversation_history.copy()
+    def get_conversation_history(self) -> List[Dict[str, Any]]:
+        return list(self.conversation_history)
 
     def cleanup(self):
-        """Cleanup resources"""
-        if hasattr(self.lights, 'cleanup'):
-            self.lights.cleanup()
+        try:
+            if hasattr(self.lights, 'cleanup'):
+                self.lights.cleanup()
+        except Exception:
+            pass
+
+    # ---------------- Helpers: history ----------------
+    def _append_history(self, user_text: str, response: Optional[str]):
+        self.conversation_history.append({
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'user': user_text,
+            'response': response,
+        })
+        self.conversation_history = self.conversation_history[-200:]
+
+    def _update_last_history_response(self, response: str):
+        if self.conversation_history:
+            self.conversation_history[-1]['response'] = response
+
+    # ---------------- Helpers: Rhasspy integration ----------------
+    def _text_to_intent_rhasspy(self, text: str) -> Optional[Dict[str, Any]]:
+        """Post text to Rhasspy and return the parsed intent JSON (or None)."""
+        url = f"{self.rhasspy_url}{RHASSPY_TEXT2INTENT_PATH}"
+        resp = requests.post(url, json={"text": text}, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        # DEBUG: print Rhasspy response so we can inspect slots/format
+        try:
+            print("RHASSPY JSON ->", json.dumps(data, ensure_ascii=False))
+        except Exception:
+            print("RHASSPY JSON ->", data)
+        if not data:
+            return None
+        return data
+
+    def _handle_intent_json(self, intent_json: Dict[str, Any]) -> str:
+        """Normalize various intent JSON shapes and perform the action."""
+        # DEBUG: quick dump for troubleshooting
+        try:
+            dbg_intent = intent_json.get('intent') or intent_json.get('intent_name') or intent_json.get('name')
+            dbg_text = intent_json.get('text') or intent_json.get('raw_text') or intent_json.get('rawText') or ''
+            print("DBG _handle_intent_json: intent:", dbg_intent, "text:", dbg_text)
+        except Exception:
+            pass
+
+        # normalize intent name and slots
+        intent_name = None
+        slots = {}
+
+        if 'intent' in intent_json:
+            intent = intent_json.get('intent')
+            if isinstance(intent, dict):
+                intent_name = intent.get('name') or intent.get('intentName')
+            else:
+                intent_name = str(intent)
+            raw_slots = intent_json.get('slots') or []
+            slots = self._normalize_slots_list(raw_slots)
+
+        elif 'intent_name' in intent_json or 'intentName' in intent_json:
+            intent_name = intent_json.get('intent_name') or intent_json.get('intentName')
+            raw_slots = intent_json.get('slots') or []
+            slots = self._normalize_slots_list(raw_slots)
+
+        else:
+            intent_name = intent_json.get('intent') or intent_json.get('name') or intent_json.get('intentName')
+            raw_slots = intent_json.get('slots') or {}
+            if isinstance(raw_slots, dict):
+                slots = raw_slots
+            else:
+                slots = self._normalize_slots_list(raw_slots)
+
+        intent_name = (intent_name or '').lower()
+
+        # robust raw_text extraction
+        raw_text = ''
+        if isinstance(intent_json.get('text'), str):
+            raw_text = intent_json.get('text')
+        elif isinstance(intent_json.get('raw_text'), str):
+            raw_text = intent_json.get('raw_text')
+        else:
+            raw_text = str(intent_json.get('text') or intent_json.get('raw_text') or '')
+        raw_text = raw_text.lower().strip()
+
+        # determine state from slots OR from raw_text
+        state_candidate = self._pick_slot_value(slots, ['state', 'switch', 'power', 'action'])
+        if not state_candidate:
+            state_candidate = self._extract_state_from_text(raw_text)
+
+        # room candidate from slots if present
+        room_candidate = self._pick_slot_value(slots, ['room', 'location', 'area', 'place'])
+        if room_candidate:
+            room_candidate = str(room_candidate).strip().lower()
+
+        # prefer 'all' if raw_text contains it as a whole word (avoid 'hall')
+        if not room_candidate:
+            if re.search(r'\b(all|every|entire|everything|whole)\b', raw_text):
+                room_candidate = 'all'
+
+        # fallback: find a known room inside raw_text (whole words)
+        if not room_candidate:
+            for canonical, synonyms in self.room_mappings.items():
+                if re.search(r'\b' + re.escape(canonical) + r'\b', raw_text):
+                    room_candidate = canonical
+                    break
+                for syn in synonyms:
+                    if re.search(r'\b' + re.escape(syn) + r'\b', raw_text):
+                        room_candidate = canonical
+                        break
+                if room_candidate:
+                    break
+
+        canonical_room = self._map_room(room_candidate)
+
+        # detect "except <room>"
+        except_room = None
+        if 'except' in raw_text:
+            try:
+                after = raw_text.split('except', 1)[1]
+                for canonical, syns in self.room_mappings.items():
+                    if re.search(r'\b' + re.escape(canonical) + r'\b', after):
+                        except_room = canonical
+                        break
+                    for s in syns:
+                        if re.search(r'\b' + re.escape(s) + r'\b', after):
+                            except_room = canonical
+                            break
+                    if except_room:
+                        break
+            except Exception:
+                except_room = None
+
+        # HANDLE "all" (with optional except)
+        if (canonical_room == 'all') or (room_candidate and str(room_candidate).lower() in ['all', 'every', 'entire', 'everything', 'whole']):
+            if except_room:
+                if state_candidate in ['on', 'off']:
+                    state_bool = state_candidate == 'on'
+                    success = True
+                    for r in self._get_room_keys():
+                        if r == except_room:
+                            continue
+                        ok = self._set_room_state(r, state_bool)
+                        success = success and bool(ok)
+                    return f"Turned {'on' if state_bool else 'off'} all lights except the {except_room}." if success else "Failed to control some lights."
+                else:
+                    return "Please tell me 'on' or 'off' when using 'except'."
+
+            if state_candidate in ['on', 'off']:
+                state_bool = state_candidate == 'on'
+                success = self._set_all_lights(state_bool)
+                return self._format_all_response(success, state_bool)
+            else:
+                return "Please tell me 'on' or 'off' when controlling all lights."
+
+        # If intent is a status/query without any room, return overall status
+        if (not canonical_room) and any(k in intent_name for k in ['status', 'check', 'query', 'which', 'what', 'are', 'is']):
+            return self._get_overall_status()
+
+        if not canonical_room:
+            available = ', '.join(sorted(self.room_mappings.keys()))
+            return f"I didn't recognize the room '{room_candidate or ''}'. Available rooms: {available}."
+
+        # Now perform the requested action for a specific room
+        if state_candidate in ['on', 'off']:
+            state_bool = state_candidate == 'on'
+            ok = self._set_room_state(canonical_room, state_bool)
+            if ok:
+                return f"{'Turned on' if state_bool else 'Turned off'} the {canonical_room} light."
+            else:
+                return f"Couldn't set the {canonical_room} light."
+
+        if state_candidate == 'toggle' or 'toggle' in intent_name:
+            new_state = self._toggle_room(canonical_room)
+            if isinstance(new_state, bool):
+                return f"Toggled the {canonical_room} light {'on' if new_state else 'off'}."
+            else:
+                return f"Couldn't toggle the {canonical_room} light."
+
+        if any(w in intent_name for w in ['status', 'check', 'is', 'are']):
+            return self._room_status_text(canonical_room)
+
+        return "Sorry — I understood the intent but I'm not sure what action to take."
+
+    def _normalize_slots_list(self, raw_slots) -> Dict[str, Any]:
+        """Convert various slot list shapes into a simple dict: {slot_name: value}."""
+        slots = {}
+        try:
+            if isinstance(raw_slots, dict):
+                return raw_slots
+            for s in raw_slots:
+                if isinstance(s, dict):
+                    name = s.get('slot_name') or s.get('name') or s.get('entity')
+                    val = None
+                    if 'value' in s:
+                        v = s.get('value')
+                        if isinstance(v, dict):
+                            val = v.get('value') or v.get('raw') or v.get('kind')
+                        else:
+                            val = v
+                    else:
+                        val = s.get('rawValue') or s.get('raw') or s.get('text')
+                    if name and val is not None:
+                        slots[name] = str(val)
+        except Exception:
+            traceback.print_exc()
+        return slots
+
+    def _extract_state_from_text(self, raw_text: str) -> Optional[str]:
+        """Detect on/off/toggle from free text (tiny autocorrect for short typos)."""
+        if not raw_text:
+            return None
+        tokens = re.findall(r"[a-zA-Z]+", raw_text.lower())
+        candidates = ['on', 'off', 'toggle']
+        for t in tokens:
+            if t in candidates:
+                return t
+        for t in tokens:
+            m = difflib.get_close_matches(t, candidates, n=1, cutoff=0.6)
+            if m:
+                return m[0]
+        return None
+
+    def _pick_slot_value(self, slots: Dict[str, Any], candidates: List[str]) -> Optional[str]:
+        for c in candidates:
+            if c in slots and slots[c]:
+                return str(slots[c])
+        for k, v in slots.items():
+            if k.lower() in candidates and v:
+                return str(v)
+        return None
+
+    # ---------------- Room mapping / fuzzy ----------------
+    def _map_room(self, raw_room: Optional[str]) -> Optional[str]:
+        """Return canonical room name if a close match is found, or 'all', or None."""
+        if not raw_room:
+            return None
+        r = raw_room.strip().lower()
+        if r in ['all', 'every', 'entire', 'everything', 'house']:
+            return 'all'
+        for canonical, synonyms in self.room_mappings.items():
+            if r == canonical or r in synonyms:
+                return canonical
+        for canonical, synonyms in self.room_mappings.items():
+            if any(syn in r for syn in synonyms):
+                return canonical
+        candidates = []
+        for canonical, synonyms in self.room_mappings.items():
+            candidates.append(canonical)
+            candidates.extend(synonyms)
+        match = difflib.get_close_matches(r, candidates, n=1, cutoff=0.6)
+        if match:
+            m = match[0]
+            for canonical, synonyms in self.room_mappings.items():
+                if m == canonical or m in synonyms:
+                    return canonical
+        return None
+
+    # ---------------- Controller actions ----------------
+    def _get_room_keys(self) -> List[str]:
+        """Return the authoritative list of actual room keys to iterate."""
+        if hasattr(self.lights, 'leds') and isinstance(self.lights.leds, dict):
+            return list(self.lights.leds.keys())
+        if hasattr(self.lights, 'get_all_states'):
+            try:
+                return list(self.lights.get_all_states().keys())
+            except Exception:
+                pass
+        if hasattr(self.lights, 'states') and isinstance(self.lights.states, dict):
+            return list(self.lights.states.keys())
+        # fallback to mapping keys
+        return list(self.room_mappings.keys())
+
+    def _set_room_state(self, room: str, state: bool) -> bool:
+        """Set one room; returns True on success."""
+        try:
+            # try preferred signature
+            if hasattr(self.lights, 'set_light'):
+                # Defensive: don't pass 'all' to controllers that don't expect it
+                if room == 'all':
+                    # call the all-lights handler instead
+                    return self._set_all_lights(state)
+                # ensure room is valid for controller if possible
+                if hasattr(self.lights, 'leds') and room not in self.lights.leds:
+                    # if controller doesn't know this room, fail gracefully
+                    # (but still try to map via get_all_states)
+                    if hasattr(self.lights, 'get_all_states'):
+                        if room not in self.lights.get_all_states().keys():
+                            return False
+                # call set_light
+                self.lights.set_light(room, state, source='chatbot')
+                return True
+            # fallback: toggle or set via simulator
+            if hasattr(self.lights, 'toggle_light') and hasattr(self.lights, 'get_light_state'):
+                current = self.lights.get_light_state(room)
+                if current == state:
+                    return True
+                # if controller has direct set_light, we would have used it; attempt toggle
+                if hasattr(self.lights, 'set_light'):
+                    self.lights.set_light(room, state, source='chatbot')
+                    return True
+                else:
+                    self.lights.toggle_light(room, source='chatbot')
+                    return True
+        except KeyError:
+            return False
+        except Exception:
+            traceback.print_exc()
+            return False
+
+    def _toggle_room(self, room: str):
+        try:
+            if hasattr(self.lights, 'toggle_light'):
+                return self.lights.toggle_light(room, source='chatbot')
+            current = self.lights.get_light_state(room)
+            ok = self._set_room_state(room, not current)
+            if ok:
+                return not current
+            return None
+        except Exception:
+            traceback.print_exc()
+            return None
+
+    def _set_all_lights(self, state: bool) -> bool:
+        """Try to set all lights using controller's efficient method if available."""
+        try:
+            # If controller has explicit all-lights helpers, use them
+            if state:
+                if hasattr(self.lights, 'all_lights_on'):
+                    try:
+                        self.lights.all_lights_on(source='chatbot')
+                        return True
+                    except TypeError:
+                        # some implementations may not accept source kw
+                        try:
+                            self.lights.all_lights_on()
+                            return True
+                        except Exception:
+                            pass
+            else:
+                if hasattr(self.lights, 'all_lights_off'):
+                    try:
+                        self.lights.all_lights_off(source='chatbot')
+                        return True
+                    except TypeError:
+                        try:
+                            self.lights.all_lights_off()
+                            return True
+                        except Exception:
+                            pass
+
+            # If no explicit helpers, iterate authoritative room keys
+            room_keys = self._get_room_keys()
+            success = True
+            for r in room_keys:
+                ok = self._set_room_state(r, state)
+                success = success and bool(ok)
+            return success
+        except Exception:
+            traceback.print_exc()
+            return False
+
+    # ---------------- Status helpers ----------------
+    def _room_status_text(self, room: str) -> str:
+        try:
+            state = self.lights.get_light_state(room)
+            return f"The {room} light is {'on' if state else 'off'}."
+        except Exception:
+            return f"I couldn't determine the state of {room}."
+
+    def _get_overall_status(self) -> str:
+        try:
+            if hasattr(self.lights, 'get_all_states'):
+                states = self.lights.get_all_states()
+            else:
+                states = {r: self.lights.get_light_state(r) for r in self.room_mappings.keys()}
+            on_rooms = [r for r, s in states.items() if s]
+            if not on_rooms:
+                return "No lights are currently on."
+            return f"Lights currently on: {', '.join(on_rooms)}."
+        except Exception:
+            traceback.print_exc()
+            return "Couldn't determine overall status."
+
+    def _format_all_response(self, success: bool, state_bool: bool) -> str:
+        if success:
+            return f"Turned {'on' if state_bool else 'off'} all lights."
+        return "Failed to control all lights."
+
+    # ---------------- Local fallback parser ----------------
+    def _local_fallback_parse(self, text: str) -> str:
+        t = text.lower()
+        if any(w in t for w in ['turn on', 'switch on', 'enable', 'on']):
+            verb = 'on'
+        elif any(w in t for w in ['turn off', 'switch off', 'disable', 'off']):
+            verb = 'off'
+        elif 'toggle' in t:
+            verb = 'toggle'
+        elif any(w in t for w in ['status', 'is', 'are', 'state']):
+            verb = 'status'
+        else:
+            verb = None
+
+        room_candidate = None
+        for canonical, synonyms in self.room_mappings.items():
+            if canonical in t or any(syn in t for syn in synonyms):
+                room_candidate = canonical
+                break
+
+        if not room_candidate and 'all' in t:
+            room_candidate = 'all'
+
+        if not verb:
+            return "I couldn't understand the command. Examples: 'turn on kitchen light'"
+
+        if room_candidate == 'all':
+            if verb in ['on', 'off']:
+                ok = self._set_all_lights(verb == 'on')
+                return self._format_all_response(ok, verb == 'on')
+            return "Try 'turn on all lights' or 'turn off all lights'."
+
+        if not room_candidate:
+            available = ', '.join(sorted(self.room_mappings.keys()))
+            return f"Couldn't find a room in your message. Available rooms: {available}."
+
+        if verb == 'on':
+            ok = self._set_room_state(room_candidate, True)
+            return f"Turned on the {room_candidate} light." if ok else f"Couldn't turn on {room_candidate}."
+        if verb == 'off':
+            ok = self._set_room_state(room_candidate, False)
+            return f"Turned off the {room_candidate} light." if ok else f"Couldn't turn off {room_candidate}."
+        if verb == 'toggle':
+            state = self._toggle_room(room_candidate)
+            if isinstance(state, bool):
+                return f"Toggled the {room_candidate} light {'on' if state else 'off'}."
+            return f"Couldn't toggle {room_candidate}."
+
+        if verb == 'status':
+            return self._room_status_text(room_candidate)
+
+        return "I couldn't understand the request."
 
 
-def main():
-    print("=== 🤖 Enhanced Smart Home Chatbot ===")
-    print("Initializing...")
-    
-    # Create lights controller
-    lights = RoomLightsController() if HARDWARE_AVAILABLE else None
-    
-    chatbot = LightChatbot(lights)
-    
+# When run directly, act as a simple CLI using the controller if present
+if __name__ == '__main__':
+    print('Starting LightChatbot CLI...')
+    lights = None
+    try:
+        if HARDWARE_AVAILABLE:
+            lights = RoomLightsController()
+    except Exception:
+        pass
+
+    bot = LightChatbot(lights)
     try:
         while True:
-            try:
-                user_input = input("\n🎤 You: ").strip()
-                if not user_input:
-                    continue
-                    
-                if user_input.lower() in ['quit', 'exit', 'bye', 'goodbye']:
-                    print("🤖 Chatbot: Goodbye! 👋")
-                    break
-                
-                response = chatbot.process_message(user_input)
-                print(f"🤖 Chatbot: {response}")
-                
-            except KeyboardInterrupt:
-                print("\n\n🤖 Chatbot: Goodbye! 👋")
+            msg = input('You: ').strip()
+            if not msg:
+                continue
+            if msg.lower() in ['quit', 'exit', 'bye']:
+                print('Bye!')
                 break
-            except Exception as e:
-                print(f"🤖 Chatbot: Sorry, I encountered an error: {str(e)}")
-                
+            resp = bot.process_message(msg)
+            print('Bot:', resp)
     except KeyboardInterrupt:
-        print("\n\n🤖 Chatbot: Goodbye! 👋")
+        print('\nShutting down...')
     finally:
-        chatbot.cleanup()
-
-
-if __name__ == "__main__":
-    main()
+        bot.cleanup()

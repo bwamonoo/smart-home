@@ -56,14 +56,24 @@ def index():
 
 @app.route('/api/light/<room>/<state>', methods=['POST'])
 def control_light(room, state):
-    """API endpoint to control lights"""
+    """API endpoint to control lights (supports 'all' as room)."""
+    room = room.lower()
+    state = state.lower()
+    # allow "all" as a special room
+    if room == 'all':
+        new_state = state == 'on'
+        # Use controller's 'all' handling
+        lights_controller.set_light('all', new_state, source='web')
+        return jsonify({'room': 'all', 'state': new_state})
+
+    # normal per-room control
     if room not in lights_controller.leds:
         return jsonify({'error': 'Room not found'}), 404
-    
-    new_state = state.lower() == 'on'
+
+    new_state = state == 'on'
     lights_controller.set_light(room, new_state, source='web')
-    
     return jsonify({'room': room, 'state': new_state})
+
 
 @app.route('/api/lights/status', methods=['GET'])
 def get_all_light_status():
@@ -79,6 +89,23 @@ def chat_endpoint():
     message = request.json.get('message', '')
     response = chatbot.process_message(message)
     return jsonify({'response': response})
+
+# route to receive Rhasspy intent webhooks
+@app.route('/api/rhasspy', methods=['POST'])
+def rhasspy_intent_webhook():
+    """
+    Rhasspy will POST intent JSON here (when configured under Settings -> Intents -> HTTP).
+    We forward the JSON to the chatbot's internal intent handler and return the textual response.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        # call internal handler from your chatbot instance
+        resp_text = chatbot._handle_intent_json(data)  # internal but fine to call here
+        return jsonify({'response': resp_text})
+    except Exception as e:
+        # don't crash Rhasspy — return an error JSON
+        return jsonify({'error': str(e)}), 500
+
 
 # WebSocket Events
 @socketio.on('connect')
