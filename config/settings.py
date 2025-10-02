@@ -28,14 +28,15 @@ BEDROOM_SENSORS = {
     'us2_trigger': 25,
     'us2_echo': 12,
     
-    'ldr': 0  # ADC channel for LDR
+    'ldr_channel': 0,  # ADS1115 channel for LDR (A0)
+    'ads1115_address': 0x48  # Default I2C address for ADS1115
 }
 
 # Automation settings
-LIGHT_THRESHOLD = 0.3           # LDR threshold for darkness
-US1_DISTANCE_THRESHOLD = 100    # cm - top sensor threshold (inside room)
-US2_DISTANCE_THRESHOLD = 50     # cm - side sensor threshold (doorway)
-EXIT_DELAY = 10                 # seconds delay before turning off light
+LIGHT_THRESHOLD = 15000        # ADS1115 value for darkness (adjust based on testing)
+US1_DISTANCE_THRESHOLD = 100   # cm - top sensor threshold (inside room)
+US2_DISTANCE_THRESHOLD = 50    # cm - side sensor threshold (doorway)
+EXIT_DELAY = 10                # seconds delay before turning off light
 
 # Web server settings
 HOST = '0.0.0.0'
