@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Project configuration and settings
+Project configuration and settings - UPDATED WITH EXACT DOORWAY MEASUREMENTS
 """
 
 # GPIO Pin configuration (BCM numbering)
@@ -32,10 +32,19 @@ BEDROOM_SENSORS = {
     'ads1115_address': 0x48  # Default I2C address for ADS1115
 }
 
-# Automation settings
+# Automation settings - OPTIMIZED FOR 42CM DOORWAY
 LIGHT_THRESHOLD = 15000        # ADS1115 value for darkness (adjust based on testing)
-US1_DISTANCE_THRESHOLD = 100   # cm - top sensor threshold (inside room)
-US2_DISTANCE_THRESHOLD = 50    # cm - side sensor threshold (doorway)
+
+# Top sensor: triggers when distance < 35cm (person is under sensor)
+US1_DISTANCE_THRESHOLD = 35    # cm - top sensor threshold (was 100cm)
+
+# Side sensor: triggers when distance < 35cm (person blocks doorway)  
+US2_DISTANCE_THRESHOLD = 35    # cm - side sensor threshold (was 50cm)
+
+# Normal distances when no one is present
+US1_NORMAL_DISTANCE = 60       # cm - top sensor to ground
+US2_NORMAL_DISTANCE = 42       # cm - side sensor across doorway
+
 EXIT_DELAY = 10                # seconds delay before turning off light
 
 # Web server settings

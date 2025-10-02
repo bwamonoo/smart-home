@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Bedroom Automation with Dual Ultrasonic Sensors and ADS1115 LDR
+OPTIMIZED FOR 42CM DOORWAY MEASUREMENTS
 """
 
 import time
@@ -11,7 +12,7 @@ import os
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config.settings import BEDROOM_SENSORS, LIGHT_THRESHOLD, US1_DISTANCE_THRESHOLD, US2_DISTANCE_THRESHOLD, EXIT_DELAY
+from config.settings import BEDROOM_SENSORS, LIGHT_THRESHOLD, US1_DISTANCE_THRESHOLD, US2_DISTANCE_THRESHOLD, US1_NORMAL_DISTANCE, US2_NORMAL_DISTANCE, EXIT_DELAY
 
 try:
     import RPi.GPIO as GPIO
@@ -45,16 +46,24 @@ class BedroomAutomation:
         self.running = False
         self.thread = None
         
+        # Statistics for monitoring
+        self.us1_readings = []
+        self.us2_readings = []
+        self.last_debug_output = 0
+        
         if not self.simulation_mode:
             self.setup_sensors()
         
-        print("🤖 Bedroom Automation Initialized (Dual Ultrasonic + ADS1115)")
+        print("🤖 Bedroom Automation Initialized (Optimized for 42cm Doorway)")
         if self.simulation_mode:
             print("  Running in SIMULATION MODE")
         print(f"  Light threshold: {LIGHT_THRESHOLD} (ADS1115 value)")
-        print(f"  Top Sensor (US1) threshold: {US1_DISTANCE_THRESHOLD}cm")
-        print(f"  Side Sensor (US2) threshold: {US2_DISTANCE_THRESHOLD}cm")
+        print(f"  Top Sensor (US1): triggers < {US1_DISTANCE_THRESHOLD}cm (normal: {US1_NORMAL_DISTANCE}cm)")
+        print(f"  Side Sensor (US2): triggers < {US2_DISTANCE_THRESHOLD}cm (normal: {US2_NORMAL_DISTANCE}cm)")
         print(f"  Exit delay: {EXIT_DELAY}s")
+        print("  Expected behavior:")
+        print("    - ENTRY: US2 (side) → US1 (top) within 1 second")
+        print("    - EXIT: US1 (top) → US2 (side) within 1 second")
     
     def setup_sensors(self):
         """Initialize dual ultrasonic sensor GPIO pins and ADS1115"""
@@ -89,11 +98,21 @@ class BedroomAutomation:
     def read_ultrasonic_distance(self, trigger_pin, echo_pin):
         """Generic function to read distance from any ultrasonic sensor"""
         if self.simulation_mode:
-            # Simulate realistic distance readings
+            # Simulate realistic distance readings based on 42cm normal distance
             if trigger_pin == BEDROOM_SENSORS['us1_trigger']:  # Top sensor
-                return 150 + (time.time() % 5) * 30  # Vary between 150-300cm
+                # Simulate: normally 42cm, drops to 20-35cm when person passes
+                base_distance = 42
+                variation = (time.time() % 10) * 3
+                if 2 < (time.time() % 15) < 4:  # Simulate person passing occasionally
+                    return 25 + variation % 15  # 25-40cm when person is under sensor
+                return base_distance + (variation % 5)  # 42-47cm normally
             else:  # Side sensor
-                return 200 + (time.time() % 8) * 25  # Vary between 200-400cm
+                # Simulate: normally 42cm, drops to 20-35cm when person passes
+                base_distance = 42
+                variation = (time.time() % 8) * 3
+                if 5 < (time.time() % 12) < 7:  # Simulate person passing occasionally
+                    return 28 + variation % 12  # 28-40cm when person blocks doorway
+                return base_distance + (variation % 4)  # 42-46cm normally
         
         try:
             # Send trigger pulse
@@ -135,7 +154,8 @@ class BedroomAutomation:
             BEDROOM_SENSORS['us1_trigger'], 
             BEDROOM_SENSORS['us1_echo']
         )
-        return distance < US1_DISTANCE_THRESHOLD, distance
+        triggered = distance < US1_DISTANCE_THRESHOLD
+        return triggered, distance
     
     def read_us2_sensor(self):
         """Read side ultrasonic sensor (doorway crossing detection)"""
@@ -143,7 +163,8 @@ class BedroomAutomation:
             BEDROOM_SENSORS['us2_trigger'], 
             BEDROOM_SENSORS['us2_echo']
         )
-        return distance < US2_DISTANCE_THRESHOLD, distance
+        triggered = distance < US2_DISTANCE_THRESHOLD
+        return triggered, distance
     
     def read_light_level(self):
         """Read light level using ADS1115"""
@@ -212,10 +233,30 @@ class BedroomAutomation:
         self.last_sensor_events = [e for e in self.last_sensor_events 
                                  if current_time - e['time'] < 1.5]
         
+        # Store readings for statistics
+        self.us1_readings.append(us1_distance)
+        self.us2_readings.append(us2_distance)
+        if len(self.us1_readings) > 100:  # Keep last 100 readings
+            self.us1_readings.pop(0)
+            self.us2_readings.pop(0)
+        
         # Print sensor status for debugging (less frequent to avoid spam)
-        if int(time.time()) % 5 == 0:  # Every 5 seconds
+        current_time_sec = time.time()
+        if current_time_sec - self.last_debug_output > 3:  # Every 3 seconds
             light_level = self.read_light_level()
-            print(f"📊 Sensors - US1: {us1_distance:.1f}cm, US2: {us2_distance:.1f}cm, LDR: {light_level}")
+            us1_avg = sum(self.us1_readings) / len(self.us1_readings) if self.us1_readings else 0
+            us2_avg = sum(self.us2_readings) / len(self.us2_readings) if self.us2_readings else 0
+            
+            print(f"📊 US1: {us1_distance:5.1f}cm (avg: {us1_avg:5.1f}cm) | "
+                  f"US2: {us2_distance:5.1f}cm (avg: {us2_avg:5.1f}cm) | "
+                  f"LDR: {light_level:5} | State: {self.state.name}")
+            
+            # Show trigger status
+            us1_status = "🔴 TRIGGERED" if us1_detected else "🟢 NORMAL"
+            us2_status = "🔴 TRIGGERED" if us2_detected else "🟢 NORMAL"
+            print(f"   US1: {us1_status} | US2: {us2_status}")
+            
+            self.last_debug_output = current_time_sec
         
         # State machine logic
         with self.lock:
@@ -230,7 +271,7 @@ class BedroomAutomation:
         """Handle logic when room is empty"""
         if self._detect_entrance_sequence():
             light_level = self.read_light_level()
-            print(f"🚶 Entrance detected - Light level: {light_level}")
+            print(f"🚶 ENTRANCE DETECTED! - Light level: {light_level}")
             if light_level > LIGHT_THRESHOLD:  # Higher value = darker
                 self._turn_on_bedroom_light()
                 print("💡 Room is dark - turning on bedroom light")
@@ -244,7 +285,7 @@ class BedroomAutomation:
         if self._detect_exit_sequence():
             self.state = RoomState.EXITING
             self._start_exit_timer()
-            print("🚶 Exit sequence detected - Starting exit delay")
+            print("🚶 EXIT SEQUENCE DETECTED - Starting 10-second exit delay")
     
     def _handle_exiting_state(self, us2_detected, us1_detected):
         """Handle exiting state with safety delay"""
@@ -265,6 +306,11 @@ class BedroomAutomation:
             if (events[i]['us2'] and      # Side sensor triggered first (doorway)
                 events[i+1]['us1'] and    # Then top sensor (inside)
                 events[i+1]['time'] - events[i]['time'] < 1.0):  # Within 1 second
+                
+                # Debug output for sequence detection
+                print(f"🎯 ENTRY SEQUENCE: US2({events[i]['us2_distance']:.1f}cm) → "
+                      f"US1({events[i+1]['us1_distance']:.1f}cm) in "
+                      f"{(events[i+1]['time'] - events[i]['time'])*1000:.0f}ms")
                 return True
         return False
     
@@ -279,6 +325,11 @@ class BedroomAutomation:
             if (events[i]['us1'] and      # Top sensor triggered first (inside)
                 events[i+1]['us2'] and    # Then side sensor (doorway)
                 events[i+1]['time'] - events[i]['time'] < 1.0):  # Within 1 second
+                
+                # Debug output for sequence detection
+                print(f"🎯 EXIT SEQUENCE: US1({events[i]['us1_distance']:.1f}cm) → "
+                      f"US2({events[i+1]['us2_distance']:.1f}cm) in "
+                      f"{(events[i+1]['time'] - events[i]['time'])*1000:.0f}ms")
                 return True
         return False
     
@@ -293,7 +344,12 @@ class BedroomAutomation:
     
     def _exit_delay_countdown(self):
         """Countdown for exit delay"""
-        time.sleep(EXIT_DELAY)
+        print(f"⏰ Exit delay started: {EXIT_DELAY} seconds remaining...")
+        for i in range(EXIT_DELAY):
+            time.sleep(1)
+            if not self.running or self.state != RoomState.EXITING:
+                return
+            print(f"⏰ {EXIT_DELAY - i - 1} seconds remaining...")
         
         with self.lock:
             if self.state == RoomState.EXITING:
@@ -323,7 +379,7 @@ class BedroomAutomation:
 
 def main():
     """Standalone bedroom automation testing"""
-    print("=== 🤖 Bedroom Automation (Dual Ultrasonic + ADS1115) Standalone Mode ===")
+    print("=== 🤖 Bedroom Automation (Optimized for 42cm Doorway) ===")
     print("This will control the bedroom light automatically")
     print("based on occupancy using two ultrasonic sensors and LDR.")
     
@@ -339,7 +395,8 @@ def main():
     try:
         automation.start()
         print("\nAutomation running. Press Ctrl+C to stop.")
-        print("Sensor readings will be displayed every 5 seconds...")
+        print("Sensor readings will be displayed every 3 seconds...")
+        print("Walk through the doorway to test entry/exit detection!")
         
         # Keep the main thread alive
         while automation.running:

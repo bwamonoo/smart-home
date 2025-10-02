@@ -1,75 +1,82 @@
 #!/usr/bin/env python3
 """
-Dual Ultrasonic Sensor - Optimized for Responsiveness
+Quick Ultrasonic Sensor Test - Single run
 """
 
-import RPi.GPIO as GPIO
 import time
+import RPi.GPIO as GPIO
 
-# Sensor 1 (Top)
-TRIG1 = 23
-ECHO1 = 24
+# Sensor pins
+SENSORS = [
+    {'name': 'US1 (Top)', 'trigger': 23, 'echo': 24},
+    {'name': 'US2 (Side)', 'trigger': 25, 'echo': 12}
+]
 
-# Sensor 2 (Side)
-TRIG2 = 25
-ECHO2 = 12
-
-def setup_sensors():
+def setup_gpio():
     GPIO.setmode(GPIO.BCM)
-    
-    for trig, echo in [(TRIG1, ECHO1), (TRIG2, ECHO2)]:
-        GPIO.setup(trig, GPIO.OUT)
-        GPIO.setup(echo, GPIO.IN)
-        GPIO.output(trig, False)
+    for sensor in SENSORS:
+        GPIO.setup(sensor['trigger'], GPIO.OUT)
+        GPIO.setup(sensor['echo'], GPIO.IN)
+        GPIO.output(sensor['trigger'], False)
+    time.sleep(0.5)
 
-    time.sleep(0.05)  # shorter init wait
-
-def measure_sensor(trig, echo, timeout=0.02):
-    """Measure distance from an ultrasonic sensor"""
-    # Send 10us pulse
-    GPIO.output(trig, True)
-    time.sleep(0.00001)
-    GPIO.output(trig, False)
-    
-    start_time = time.perf_counter()
-    timeout_time = start_time + timeout
-
-    # Wait for echo start
-    while GPIO.input(echo) == 0:
-        start_time = time.perf_counter()
-        if start_time > timeout_time:
-            return None
-    
-    # Wait for echo end
-    stop_time = time.perf_counter()
-    while GPIO.input(echo) == 1:
-        stop_time = time.perf_counter()
-        if stop_time > timeout_time:
-            return None
-
-    # Distance calculation (speed of sound = 34300 cm/s)
-    time_elapsed = stop_time - start_time
-    return (time_elapsed * 34300) / 2
+def quick_measure(trigger, echo):
+    try:
+        GPIO.output(trigger, True)
+        time.sleep(0.00001)
+        GPIO.output(trigger, False)
+        
+        start = time.time()
+        timeout = start + 0.1
+        
+        while GPIO.input(echo) == 0:
+            start = time.time()
+            if time.time() > timeout:
+                return -1
+        
+        stop = time.time()
+        timeout = stop + 0.1
+        
+        while GPIO.input(echo) == 1:
+            stop = time.time()
+            if time.time() > timeout:
+                return -1
+        
+        distance = ((stop - start) * 34300) / 2
+        return round(distance, 1) if 2 < distance < 400 else -1
+        
+    except:
+        return -1
 
 def main():
-    setup_sensors()
-    try:
-        while True:
-            dist1 = measure_sensor(TRIG1, ECHO1)
-            dist2 = measure_sensor(TRIG2, ECHO2)
-
-            if dist1 is not None and dist2 is not None:
-                print(f"US1 (Top): {dist1:.1f} cm | US2 (Side): {dist2:.1f} cm")
+    print("🚀 Quick Ultrasonic Test")
+    print("=" * 40)
+    
+    setup_gpio()
+    
+    print("Taking 3 readings from each sensor...")
+    print()
+    
+    for sensor in SENSORS:
+        print(f"📡 {sensor['name']}:")
+        readings = []
+        
+        for i in range(3):
+            dist = quick_measure(sensor['trigger'], sensor['echo'])
+            if dist > 0:
+                readings.append(dist)
+                print(f"   Reading {i+1}: {dist} cm ✅")
             else:
-                print("Missed reading...")
-
-            # Faster loop refresh
-            time.sleep(0.05)  # 20 Hz update rate (~50ms)
-            
-    except KeyboardInterrupt:
-        print("\nStopping...")
-    finally:
-        GPIO.cleanup()
+                print(f"   Reading {i+1}: Failed ❌")
+            time.sleep(0.5)
+        
+        if readings:
+            avg = sum(readings) / len(readings)
+            print(f"   Average: {avg:.1f} cm")
+        print()
+    
+    GPIO.cleanup()
+    print("✅ Test complete!")
 
 if __name__ == "__main__":
     main()
