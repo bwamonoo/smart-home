@@ -279,3 +279,5 @@ If you want, I can now:
 * Produce a tiny systemd service file to auto-start your Flask app and the Rhasspy container on boot so the system is fully headless.
 
 Which one would you prefer?
+
+https://chat.deepseek.com/share/3fdr84w11se38yt2uu
